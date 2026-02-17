@@ -18,6 +18,13 @@ This workspace contains the official [Comfy-Org](https://github.com/Comfy-Org) r
 | `comfy-kitchen/` | [Comfy-Org/comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) | Fast kernel library for diffusion inference with multiple compute backends |
 | `comfy-aimdo/` | [Comfy-Org/comfy-aimdo](https://github.com/Comfy-Org/comfy-aimdo) | AI Model Dynamic Offloader — PyTorch VRAM allocator with on-demand weight offloading |
 
+## Workspace Documentation
+
+Cross-repo notes, architecture walkthroughs, and research docs live as `.md` files in the **root** of this repository (not in `docs/`, which is a cloned repo). Examples:
+
+- [`desktop-model-downloads.md`](desktop-model-downloads.md) — How the desktop app downloads models directly to `models/` directories
+- [`manager-restart.md`](manager-restart.md) — How ComfyUI-Manager restart is handled by the launcher vs desktop
+
 ## Cloned On
 
 **2026-02-16** from the default branches of each repository.
