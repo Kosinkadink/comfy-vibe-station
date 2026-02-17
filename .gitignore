@@ -5,3 +5,8 @@ ComfyUI-Launcher/
 ComfyUI-Launcher-Environments/
 ComfyUI-Manager/
 desktop/
+workflow_templates/
+docs/
+pyisolate/
+comfy-kitchen/
+comfy-aimdo/
