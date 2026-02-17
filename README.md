@@ -18,6 +18,7 @@ This workspace contains the official [Comfy-Org](https://github.com/Comfy-Org) r
 | `pyisolate/` | [Comfy-Org/pyisolate](https://github.com/Comfy-Org/pyisolate) | Python extension isolation — run extensions in isolated venvs with seamless RPC |
 | `comfy-kitchen/` | [Comfy-Org/comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) | Fast kernel library for diffusion inference with multiple compute backends |
 | `comfy-aimdo/` | [Comfy-Org/comfy-aimdo](https://github.com/Comfy-Org/comfy-aimdo) | AI Model Dynamic Offloader — PyTorch VRAM allocator with on-demand weight offloading |
+| `comfyui-benchmark/` | [Comfy-Org/comfyui-benchmark](https://github.com/Comfy-Org/comfyui-benchmark) | Custom extension for benchmarking ComfyUI performance with visualization |
 
 ## Workspace Documentation
 
