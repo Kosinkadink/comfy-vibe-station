@@ -26,6 +26,7 @@ Cross-repo notes, architecture walkthroughs, and research docs live as `.md` fil
 
 - [`desktop-model-downloads.md`](desktop-model-downloads.md) — How the desktop app downloads models directly to `models/` directories
 - [`desktop-port-selection.md`](desktop-port-selection.md) — How the desktop app selects a port for the ComfyUI backend (default, overrides, availability scan)
+- [`desktop-python-environment.md`](desktop-python-environment.md) — How the desktop app sets up the Python venv and handles install/environment errors
 - [`manager-restart.md`](manager-restart.md) — How ComfyUI-Manager restart is handled by the launcher vs desktop
 
 ## Cloned On
