@@ -1,6 +1,10 @@
-# ComfyUI Portable Update Scripts
+# ComfyUI Update Mechanisms
 
-How the update scripts in the Windows standalone/portable package work.
+How ComfyUI updates work across the portable (standalone) and desktop (Electron) distributions.
+
+---
+
+# Portable (Windows Standalone)
 
 ## Directory Layout
 
@@ -120,3 +124,107 @@ The [`stable-release.yml`](ComfyUI/.github/workflows/stable-release.yml) workflo
 - **Stash-before-update**: Local modifications are stashed rather than discarded
 - **Self-updating updater**: The update scripts can update themselves, handled via a two-pass `.bat` approach to avoid file-in-use issues
 - **Cached requirements**: Dependencies are only reinstalled when `requirements.txt` actually changes, keeping normal updates fast
+
+---
+
+# Desktop (Electron App)
+
+The desktop app ([`desktop/`](desktop/)) replaces the portable batch scripts with a fully managed Electron + `uv` workflow. Updates happen at two levels: the **Electron shell** itself and the **Python packages** it manages.
+
+## Electron App Auto-Update
+
+The app uses [ToDesktop](https://www.todesktop.com/) (`@todesktop/runtime`) for self-updating the Electron binary:
+
+- Checks for updates every **1 hour** against `https://updater.comfy.org` ([`comfyDesktopApp.ts`](desktop/src/main-process/comfyDesktopApp.ts))
+- Exposes `checkForUpdates` and `restartAndInstall` to the renderer via IPC ([`AppHandlers.ts`](desktop/src/handlers/AppHandlers.ts), [`preload.ts`](desktop/src/preload.ts))
+- When an update is ready, always prompts the user to install and restart
+
+## Python Package Updates
+
+Instead of pygit2 and batch scripts, the desktop app manages Python through **`uv`** (a fast Python package manager bundled as a binary in `assets/uv/`).
+
+### Architecture
+
+```
+desktop/
+├── src/
+│   ├── virtualEnvironment.ts          # VirtualEnvironment class — uv-based venv management
+│   ├── install/
+│   │   └── installationManager.ts     # InstallationManager — orchestrates install & updates
+│   └── main-process/
+│       └── comfyInstallation.ts       # ComfyInstallation — validates install state
+└── assets/
+    ├── ComfyUI/                       # Bundled ComfyUI source (cloned at build time)
+    │   ├── requirements.txt           # Core requirements
+    │   └── manager_requirements.txt   # Manager requirements
+    └── uv/                            # Bundled uv binaries (win/linux/darwin)
+```
+
+### VirtualEnvironment Class
+
+[`virtualEnvironment.ts`](desktop/src/virtualEnvironment.ts) — the core of the desktop update system:
+
+- **Creates** a `.venv` in the user's `basePath` using `uv venv` with a configured Python version (default 3.12)
+- **Installs packages** via `uv pip install` with configurable mirrors for PyPI and PyTorch (CUDA, ROCm, CPU)
+- **Validates requirements** using `uv pip install --dry-run` — parses the output to determine if packages are up to date, need a known upgrade, or have an unexpected discrepancy
+
+### Update Detection (`hasRequirements`)
+
+On every launch, `ComfyInstallation.validate()` calls `VirtualEnvironment.hasRequirements()`, which:
+
+1. Runs `uv pip install --dry-run -r requirements.txt` for both ComfyUI core and ComfyUI-Manager
+2. Checks if output says `Would make no changes` → packages are current
+3. If packages need installing, classifies the change:
+   - **Manager upgrade**: exactly 1–3 known packages (`uv`, `toml`, `chardet`)
+   - **Core upgrade**: only recognized packages change (`aiohttp`, `av`, `yarl`, `pydantic`, `sqlalchemy`, etc.) with no unexpected removals
+   - **Error**: unknown packages are being added/removed — flags for manual intervention
+4. Returns `'OK'`, `'package-upgrade'`, or `'error'`
+
+### Update Execution (`updatePackages`)
+
+If `needsRequirementsUpdate` is true (upgrade detected), `InstallationManager.updatePackages()`:
+
+1. Loads a `desktop-update` page in the Electron window
+2. Calls `installComfyUIRequirements()` — runs `uv pip install -r requirements.txt` with configured mirrors
+3. Calls `installComfyUIManagerRequirements()` — runs `uv pip install -r manager_requirements.txt`
+4. Checks if NVIDIA driver version is below minimum (580) and warns the user
+5. Re-validates the installation
+
+### NVIDIA Torch Upgrade Check
+
+`VirtualEnvironment.needsNvidiaTorchUpgrade()` reads installed torch/torchaudio/torchvision versions and checks they:
+- Include the required CUDA tag (currently `+cu130`)
+- Meet minimum version thresholds
+
+This check exists but **automatic NVIDIA torch upgrades are currently disabled** (commented out) so users control large downloads themselves.
+
+### Build-Time Setup
+
+[`makeComfy.js`](desktop/scripts/makeComfy.js) runs during the desktop build to:
+
+1. Clone ComfyUI at a specific tag (`v{version}`) or branch into `assets/ComfyUI/`
+2. Clone ComfyUI-Manager into `assets/ComfyUI/custom_nodes/` (legacy) or use `manager_requirements.txt` (current)
+3. Build the frontend and download `uv` binaries for all platforms
+
+[`updateFrontend.js`](desktop/scripts/updateFrontend.js) automates frontend version bumps by fetching the latest release from `Comfy-Org/ComfyUI_frontend` and creating a PR.
+
+### Reinstall & Recovery
+
+The desktop app provides several recovery mechanisms:
+
+- **Reinstall venv**: If Python import verification fails, offers to delete `.venv` and recreate it
+- **Reinstall requirements**: `reinstallRequirements()` tries a manual install, and if that fails, recreates the entire venv
+- **Clear uv cache**: `clearUvCache()` runs `uv cache clean`
+- **Full reinstall**: IPC handler for `REINSTALL` deletes the installation and relaunches the app
+
+## Key Design Decisions (Desktop vs Portable)
+
+| Aspect | Portable | Desktop |
+|--------|----------|---------|
+| **Package manager** | pip (via embedded Python) | uv (bundled binary) |
+| **Git operations** | pygit2 (Python binding) | Not needed — ComfyUI source bundled at build time |
+| **Update trigger** | Manual (user runs `.bat`) | Automatic on every launch |
+| **Torch management** | `update_comfyui_and_python_dependencies.bat` | Automatic detection, manual upgrade (disabled by default) |
+| **Self-update** | Two-pass `.bat` with `update_new.py` | ToDesktop auto-updater for Electron shell |
+| **Rollback** | Timestamped backup git branches | Reinstall venv / full reinstall |
+| **Requirement diffing** | File comparison (`filecmp`) | `uv pip install --dry-run` output parsing |
