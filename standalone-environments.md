@@ -532,6 +532,108 @@ This is read-only for now — actual custom node management (install/uninstall/u
 
 ---
 
+## Phase 5 Analysis: Wheel Cache
+
+### What Changes
+
+Phase 5 replaces the `createEnv()` file-copy approach (copying ~5-10 GB of `site-packages` from the master env) with `uv pip install` from bundled `.whl` files. Two coordinated changes are needed:
+
+**Build workflow** (`build-standalone-env.yml`): After the existing "Install dependencies" step, freeze the master environment and download matching wheels:
+
+```yaml
+- name: Bundle wheel cache
+  shell: bash
+  run: |
+    if [[ "${{ runner.os }}" == "Windows" ]]; then
+      PYTHON="standalone-env/python.exe"
+      UV="standalone-env/uv.exe"
+    else
+      PYTHON="standalone-env/bin/python3"
+      UV="standalone-env/bin/uv"
+    fi
+
+    "$UV" pip freeze --python "$PYTHON" > standalone-env/requirements-frozen.txt
+
+    "$UV" pip download \
+      -r standalone-env/requirements-frozen.txt \
+      -d standalone-env/wheels \
+      --python-version "${{ matrix.python_version || env.PYTHON_VERSION }}" \
+      --python-platform "${{ matrix.python_platform }}"
+```
+
+Both `wheels/` and `requirements-frozen.txt` ship automatically since the workflow already packages the entire `standalone-env/` directory.
+
+**Launcher** (`createEnv()` in `standalone.js`): Replace the copy path with wheel install, keeping the old path as a fallback for pre-wheel-cache installations:
+
+```javascript
+async function createEnv(installPath, envName, onProgress) {
+  // ... uv venv ...
+
+  const frozenReqs = path.join(installPath, "standalone-env", "requirements-frozen.txt");
+  const wheelsDir = path.join(installPath, "standalone-env", "wheels");
+
+  if (fs.existsSync(frozenReqs) && fs.existsSync(wheelsDir)) {
+    // Wheel cache path: install from bundled wheels (fast, offline)
+    const envPython = getEnvPythonPath(installPath, envName);
+    await runUv(uvPath, ["pip", "install", "-r", frozenReqs,
+      "--find-links", wheelsDir, "--no-index",
+      "--python", envPython]);
+    await codesignBinaries(findSitePackages(envPath));  // macOS only
+  } else {
+    // Legacy path: copy site-packages from master
+    await copyDirWithProgress(masterSitePackages, envSitePackages, onProgress);
+    await codesignBinaries(envSitePackages);
+  }
+}
+```
+
+### Touchpoints in Existing Code
+
+| Location | Impact |
+|---|---|
+| `createEnv()` standalone.js | Primary change — wheel install replaces file copy |
+| `postInstall()` standalone.js | Calls `createEnv()` — progress reporting changes (no file count) |
+| `handleAction("env-create")` standalone.js | Same — progress UX changes |
+| `handleAction("update-standalone")` standalone.js | Calls `createEnv()` after extracting new release — benefits most since the new archive has wheels |
+| `performSoftRestore()` standalone.js | No change — already uses `pipInstallFromList()`, not `createEnv()` |
+| Clean restore (standalone.js) | Calls `createEnv()` then `performSoftRestore()` — both benefit; fast env creation then snapshot delta |
+| `lib/pip.js` | No changes — `buildPipArgs()` already supports `--find-links`/`--no-index` |
+| `lib/snapshots.js` | No changes — snapshots record package versions, not installation method |
+| `copyDirWithProgress`, `collectFiles`, `findSitePackages` | Retained for legacy fallback only; unused on wheel-cache installations |
+
+### Benefits
+
+- **Faster env creation**: `uv pip install` from local wheels is ~10-30x faster than copying millions of individual files. The torch wheel alone expands to thousands of `.py` files
+- **Offline & reproducible**: `--no-index` guarantees zero network access; frozen requirements guarantee exact versions
+- **Clean restore speedup**: The biggest user-facing win — "clean restore" (new env from master + snapshot packages) currently copies the entire master env first, then soft-restores. With wheel cache, env creation becomes trivially fast
+
+### Trade-offs & Risks
+
+1. **Archive size may increase**: `wheels/` could add 1-2 GB since the master `site-packages` is still present (needed by the master Python itself). Net size depends on how well 7z deduplicates between `site-packages` and `wheels/`. Likely ~10-20% increase. A future optimization could strip the master `site-packages` to only what the master Python needs to run (`uv`, `pip`, `setuptools`), but this is aggressive and should wait for real archive size data
+
+2. **macOS codesigning**: `codesignBinaries()` ad-hoc signs `.dylib`/`.so` files after copy. With wheel install, `uv` extracts wheels and the resulting files still need signing. The function should run after wheel install, same as before — verify binaries end up in the expected `site-packages` location
+
+3. **Progress reporting**: `copyDirWithProgress` gives granular file-by-file progress. Wheel install is fast enough to use an indeterminate spinner. The `onProgress` callback pattern in callers (`postInstall`, `handleAction("env-create")`, update flow) needs updating to handle the case where there's no total file count
+
+4. **`uv pip download` platform fidelity**: Downloading wheels with `--python-platform` on GitHub Actions may not perfectly match the target in edge cases (e.g., CUDA-specific wheel tags, ABI-specific builds). Needs testing per variant, especially torch+CUDA builds that use custom index URLs. The `python_platform` matrix variable already exists in the workflow
+
+5. **Backwards compatibility**: Old installations without `wheels/` or `requirements-frozen.txt` fall back to the copy approach. No migration needed
+
+### Build Workflow Notes
+
+- The workflow currently installs via `pip install` (not `uv pip install`), but `uv pip freeze` is compatible with standard site-packages — it reads the installed `.dist-info` metadata, not how packages were installed
+- The `--python-platform` flag on `uv pip download` maps to the existing `python_platform` matrix variable (e.g., `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`)
+- The build workflow must ship first (in the Environments repo) — the Launcher change is useless without `wheels/` in the archive
+- PyPI mirror config (from the "PyPI Mirrors" section) is not needed for Phase 5 since `--no-index` means no network. Mirrors matter for `performSoftRestore()` and custom node deps, which are Phases 1-4
+
+### Rollout Order
+
+1. Ship the build workflow change as a standalone PR to the Environments repo — add the freeze + download steps, verify `wheels/` in each variant's archive
+2. Update `createEnv()` in the Launcher with the conditional fallback
+3. Defer stripping master `site-packages` until real archive size data is available
+
+---
+
 ## Artifact Hosting & China Accessibility
 
 Release artifacts from `Kosinkadink/ComfyUI-Launcher-Environments` are currently hosted on GitHub. If artifacts are moved to a CDN more reliable in China (e.g., Alibaba Cloud OSS, Tencent COS), GitHub-dependent operations (git fetch, git checkout, source archive download) become unreliable for users in those regions.
@@ -657,9 +759,13 @@ Mirror settings should be stored in the Launcher's settings (alongside existing 
 - [ ] Snapshot comparison view (diff two snapshots)
 
 ### Phase 5: Wheel Cache (depends on build workflow changes)
+- [ ] Add `uv pip freeze` + `uv pip download` steps to `build-standalone-env.yml`
+- [ ] Verify `wheels/` appears in release archives with correct content per variant
 - [ ] Bundle `wheels/` + `requirements-frozen.txt` in release archives
-- [ ] Update `createEnv()` to use `uv pip install --find-links --no-index`
-- [ ] Faster and smaller env creation + snapshot restoration
+- [ ] Update `createEnv()` to use `uv pip install --find-links --no-index` with fallback to legacy copy for pre-wheel-cache installations
+- [ ] Update progress reporting (wheel install is fast; indeterminate spinner replaces file-count progress)
+- [ ] Verify macOS codesigning still works (run `codesignBinaries()` after wheel install)
+- [ ] Faster env creation + snapshot clean restore
 
 ---
 
