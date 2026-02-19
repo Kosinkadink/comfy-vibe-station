@@ -532,6 +532,53 @@ This is read-only for now — actual custom node management (install/uninstall/u
 
 ---
 
+## Custom Node Dependency Installation
+
+### `installCustomNodeDeps()` (`lib/nodes.js`)
+
+Scans all active custom nodes for `requirements.txt` and installs their dependencies into a target environment. Used after env creation and during snapshot restore to ensure custom node pip dependencies are satisfied.
+
+```javascript
+async function installCustomNodeDeps(installPath, uvPath, pythonPath, options = {}) {
+  const nodes = await scanCustomNodes(installPath);
+  const activeNodes = nodes.filter(n => n.enabled && n.type !== "file");
+  for (const node of activeNodes) {
+    const reqFile = path.join(node.path, "requirements.txt");
+    if (!existsSync(reqFile)) continue;
+    await runUv(uvPath, buildPipArgs(
+      ["pip", "install", "-r", reqFile, "--python", pythonPath], options));
+  }
+}
+```
+
+**Where it's needed**:
+- After `createEnv()` in `postInstall` and `handleAction("env-create")` — new envs have master packages but not custom node deps
+- After Strategy A update (step 5) — new env from new master may not have custom node deps
+- Strategy B fork — new installation copies `custom_nodes/` but needs deps installed into the new env
+- Snapshot restore — after restoring node state, deps must be synced
+
+### Custom Node State Restore (Future)
+
+Currently, snapshot restore only restores pip packages and reports custom node differences. A full restore would need to handle node state changes:
+
+| Change | Action | Mechanism |
+|---|---|---|
+| Node added since snapshot | Move to `.disabled/` or delete | Filesystem move/delete |
+| Node removed since snapshot | Cannot restore without re-downloading | Report to user |
+| CNR version changed | Re-download old version | `api.comfy.org/nodes/{id}/install?version=X` |
+| Git commit changed | Checkout snapshot's commit | `git checkout {commit}` in node directory |
+| Enabled/disabled changed | Move between `custom_nodes/` and `.disabled/` | Filesystem move |
+
+**Two approaches for implementation**:
+
+1. **Launcher-native**: Implement CNR download + git checkout directly. Full control, works offline for git nodes, but requires reimplementing Manager's `.tracking` file dance for CNR nodes.
+
+2. **Delegate to Manager**: Write a `restore-snapshot.json` to `startup-scripts/` in Manager's format. Manager's `prestartup_script.py` handles the restore on next ComfyUI boot — it already knows how to download CNR versions, git checkout, and manage `.tracking`/`.disabled`. Trade-off: couples to Manager's snapshot format, only works if Manager is installed and `--enable-manager` is set (true for all Standalone installations).
+
+**Decision**: Deferred. The pip-only restore + informational node diff is sufficient for the "undo last update" use case (updates preserve `custom_nodes/` via `PRESERVED_DIRS`). Full node restore matters more for Strategy B forks and manual "restore to a known-good state" scenarios.
+
+---
+
 ## Phase 5 Analysis: Wheel Cache
 
 ### What Changes
