@@ -1,4 +1,10 @@
-# Standalone Environment Management
+# ⚠️ STALE — Superseded by `update_support_plan.md`
+
+This document was the design doc for the `phase1-env-management` branch, which was an early attempt at environment management. The approach has been rethought and replaced by the update support plan in `comfy-vibe-station/update_support_plan.md`. This document is kept for historical reference and code snippets only.
+
+---
+
+# Standalone Environment Management (ARCHIVED)
 
 Design for virtual environment management, snapshots, and rollback in ComfyUI-Launcher's Standalone source.
 
