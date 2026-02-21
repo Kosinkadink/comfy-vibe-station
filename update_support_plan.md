@@ -201,6 +201,7 @@ Combine creating a new Standalone installation with custom node/user data migrat
 
 ### Future Enhancements
 
+- **Release-update UX rework:** The release-update action (step 5) currently lives in the Advanced section of the detail page. It will likely need to be moved, triggered, or suggested from other places — e.g. surfaced when a new Standalone release is available, offered as an alternative when a commit-based update detects PyTorch incompatibilities, or accessible from the installation list. The handler in `lib/ipc.js` and the `allUserData` migration path in `sources/standalone.js` should be revisited when this happens. See also `docs/migration-parity.md` for known migration gaps (install.py execution, Manager delegation, downgrade protection).
 - **Disk space checks:** Gate large operations (update downloads, install copies, env creation) on available disk space using `lib/disk.js`. See `TODO_DISK_SPACE_CHECKS.md` on the `phase1-env-management` branch for specifics.
 - **Zipped `.git` fallback:** Download `.git` history from release artifacts when GitHub is unreachable, supporting offline/restricted-network Stable updates.
 - **uv hardlink/symlink optimization:** If env creation switches to `uv` link modes, update the copy logic to handle non-self-contained site-packages.
