@@ -110,27 +110,66 @@ src/
 
 ## Phases
 
-### Phase 1: Scaffold build pipeline
+### Phase 1: Scaffold build pipeline ✅ COMPLETE
 
-Set up electron-vite + TypeScript + Vue tooling. App should build and run a minimal Vue "hello world" renderer.
+Set up electron-vite + TypeScript + Vue tooling.
 
-1. Initialize `electron.vite.config.ts` with main/preload/renderer entries
-2. Create `tsconfig.json` (root) + `tsconfig.node.json` (main/preload) + `tsconfig.web.json` (renderer)
-3. Create `src/` directory structure
-4. Add all dependencies to `package.json`
-5. Create minimal `src/renderer/main.ts` + `App.vue` that renders "ComfyUI Launcher"
-6. Create minimal `src/main/index.ts` that opens a BrowserWindow loading the Vite renderer
-7. Create minimal `src/preload/index.ts` with empty API
-8. Verify `electron-vite dev` launches the app with HMR
-9. Verify `electron-vite build` + `electron-builder` produces a distributable
+**What was done:**
+- `electron.vite.config.ts` — main/preload/renderer build with Vue + Tailwind plugins
+- `tsconfig.json` (root project refs) + `tsconfig.node.json` (main/preload) + `tsconfig.web.json` (renderer)
+- `src/main/index.ts` — minimal Electron main process (BrowserWindow, dev URL / prod file loading)
+- `src/preload/index.ts` + `index.d.ts` — typed contextBridge with placeholder `ping` API
+- `src/renderer/index.html` — HTML entry with CSP (allows ws: for HMR)
+- `src/renderer/src/main.ts` — Vue app entry with Pinia
+- `src/renderer/src/App.vue` — minimal scaffold component with Tailwind classes
+- `src/renderer/src/assets/main.css` — Tailwind CSS 4 import
+- `src/renderer/src/env.d.ts` — Vite client + Vue module type declarations
+- `electron-builder.yml` — build config (replaces `build` section from package.json)
+- `resources/icon.png` — app icon for electron-vite
+- Updated `package.json` — `main: "./out/main/index.js"`, electron-vite scripts, all new deps
+- Updated `.gitignore` — added `out/`
 
-**Deliverable**: App builds and runs via electron-vite. Old files untouched.
+**Verified:** `electron-vite build` ✅, `tsc` typecheck ✅, `vue-tsc` typecheck ✅
+
+**Old files preserved** (still functional, will be removed after Phase 2):
+- `main.js`, `preload.js`, `index.html`, `renderer/*.js`, `settings.js`, `installations.js`, `lib/*.js`
 
 ---
 
 ### Phase 2: Renderer — Vue 3 rewrite
 
 Convert the 15 renderer files into Vue components + Pinia stores. This is ~70% of the total work.
+
+**Branch:** `vue-rework` in `ComfyUI-Launcher`
+**Working directory:** `c:/Users/Kosinkadink/workplaces/002/comfy-vibe-station/ComfyUI-Launcher`
+**Build command:** `npx electron-vite build` (must pass after changes)
+**Typecheck:** `npm run typecheck` (must pass after changes)
+
+**Old renderer files to read** (these contain all the logic to port):
+- `renderer/util.js` — READ FIRST: view switching, state maps (running/sessions/errors), card helpers, theme
+- `renderer/sessions.js` — session buffer for terminal output, IPC listeners for comfy-output/comfy-exited
+- `renderer/modal.js` — Promise-based modal system (alert/confirm/confirmWithOptions/prompt/select)
+- `renderer/i18n.js` — custom i18n with `data-i18n` attribute walker and `window.t()` helper
+- `renderer/list.js` — installation list with filtering, drag reorder, action buttons, async rendering
+- `renderer/detail.js` — installation detail modal with sections, editable fields, action chains
+- `renderer/running.js` — running/errors/in-progress instances view
+- `renderer/settings.js` — dynamic settings form from API-driven sections
+- `renderer/models.js` — model directory management with dir cards
+- `renderer/new-install.js` — new installation wizard with cascading field selects
+- `renderer/track.js` — track existing installation by probing a directory
+- `renderer/console.js` — terminal output view for running instances
+- `renderer/progress.js` — progress modal (flat/stepped modes) with terminal output
+- `renderer/update-banner.js` — auto-update state machine (available/downloading/ready/error)
+- `renderer/styles.css` — full CSS (design tokens, card styles, modal styles, etc.)
+
+**Also read for context:**
+- `preload.js` — current IPC API surface (30+ methods) that `window.api` exposes
+- `index.html` — current HTML structure (sidebar, views, modals, SVG sprite)
+- `locales/en.json` — i18n message keys
+
+**New files to create/modify** are under `src/renderer/src/`. The Vue app entry (`main.ts`) and `App.vue` already exist from Phase 1.
+
+Phase 2 should be done in sub-phases (2a → 2b → 2c → 2d) to keep changes manageable. Each sub-phase should result in a buildable, typechecking state.
 
 #### 2a: Core infrastructure
 
