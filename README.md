@@ -10,8 +10,8 @@ This workspace contains the official [Comfy-Org](https://github.com/Comfy-Org) r
 | `ComfyUI_frontend/` | [Comfy-Org/ComfyUI_frontend](https://github.com/Comfy-Org/ComfyUI_frontend) | Official frontend — the Vue/TypeScript web UI |
 | `ComfyUI-Manager/` | [Comfy-Org/ComfyUI-Manager](https://github.com/Comfy-Org/ComfyUI-Manager) | Extension manager — install, remove, and manage custom nodes |
 | `desktop/` | [Comfy-Org/desktop](https://github.com/Comfy-Org/desktop) | Desktop application — Electron wrapper for Windows & macOS |
-| `ComfyUI-Launcher/` | [Kosinkadink/ComfyUI-Launcher](https://github.com/Kosinkadink/ComfyUI-Launcher) | Electron app for managing multiple ComfyUI installations |
-| `ComfyUI-Launcher-Environments/` | [Kosinkadink/ComfyUI-Launcher-Environments](https://github.com/Kosinkadink/ComfyUI-Launcher-Environments) | Environment definitions for ComfyUI-Launcher |
+| `ComfyUI-Launcher/` | [Comfy-Org/ComfyUI-Launcher](https://github.com/Comfy-Org/ComfyUI-Launcher) | Electron app for managing multiple ComfyUI installations |
+| `ComfyUI-Launcher-Environments/` | [Comfy-Org/ComfyUI-Launcher-Environments](https://github.com/Comfy-Org/ComfyUI-Launcher-Environments) | Environment definitions for ComfyUI-Launcher |
 | `workflow_templates/` | [Comfy-Org/workflow_templates](https://github.com/Comfy-Org/workflow_templates) | Official workflow templates and subgraph blueprints for ComfyUI |
 | `docs/` | [Comfy-Org/docs](https://github.com/Comfy-Org/docs) | Documentation site — source for [docs.comfy.org](https://docs.comfy.org) (Mintlify) |
 | `embedded-docs/` | [Comfy-Org/embedded-docs](https://github.com/Comfy-Org/embedded-docs) | Built-in help pages for core nodes, shipped as a PyPI package |
