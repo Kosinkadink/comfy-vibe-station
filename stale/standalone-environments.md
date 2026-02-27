@@ -349,7 +349,7 @@ Standalone supports two update tracks, each with a different mechanism:
 
 #### Stable Track
 
-Follows tagged releases from `Kosinkadink/ComfyUI-Launcher-Environments`.
+Follows tagged releases from `Comfy-Org/ComfyUI-Launcher-Environments`.
 
 - **Check**: Fetch releases from the environments repo, compare `releaseTag` against current `manifest.json`
 - **Update**: Download and extract a new release archive (new `standalone-env/` + new `ComfyUI/` code)
@@ -689,7 +689,7 @@ async function createEnv(installPath, envName, onProgress) {
 
 ## Artifact Hosting & China Accessibility
 
-Release artifacts from `Kosinkadink/ComfyUI-Launcher-Environments` are currently hosted on GitHub. If artifacts are moved to a CDN more reliable in China (e.g., Alibaba Cloud OSS, Tencent COS), GitHub-dependent operations (git fetch, git checkout, source archive download) become unreliable for users in those regions.
+Release artifacts from `Comfy-Org/ComfyUI-Launcher-Environments` are currently hosted on GitHub. If artifacts are moved to a CDN more reliable in China (e.g., Alibaba Cloud OSS, Tencent COS), GitHub-dependent operations (git fetch, git checkout, source archive download) become unreliable for users in those regions.
 
 ### Impact on Update & Rollback
 
