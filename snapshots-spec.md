@@ -456,7 +456,7 @@ Git operations require the `git` binary in PATH. Availability is checked once up
 | Current state | Target state | Action |
 |---|---|---|
 | Missing | In snapshot | Report to user (cannot auto-restore) |
-| Present, not in snapshot | — | Move to `.disabled/` |
+| Present, not in snapshot | — | Delete from filesystem |
 | Match | Match | Skip |
 
 #### Post-install scripts
@@ -471,6 +471,7 @@ Post-install failures are non-fatal — reported but do not block the restore.
 
 - **ComfyUI-Manager is never modified.** Any node whose `id` contains `comfyui-manager` (case-insensitive) is skipped.
 - **Path traversal protection.** `nodeId` and `dirName` from snapshot data are validated via `isSafePathComponent()` before use in filesystem operations.
+- **Extra nodes are deleted, not disabled.** Nodes not present in the target snapshot are fully removed from the filesystem rather than moved to `.disabled/`. Disabling would leave them visible in Manager's UI, and re-enabling them would fail because the pip restore phase removes their dependencies. Deletion gives a clean state.
 - **No backup/revert for node operations.** Unlike pip (which has a targeted backup), each node operation is individually atomic — install, switch, enable, or disable either succeeds or fails independently. Failed operations are tracked in `NodeRestoreResult.failed`.
 - **Enable/disable collision handling.** Both `disableNode` and `enableNode` remove any pre-existing destination directory before renaming, preventing `ENOTEMPTY` errors from partial prior restores.
 
