@@ -2,6 +2,8 @@
 
 Consolidated spec for environment snapshots in ComfyUI-Launcher. Captures pip packages, custom nodes, and ComfyUI version at boot granularity, enabling history tracking and rollback.
 
+**Status:** Phases 1–3 implemented. Phase 4 (Hard Snapshot Lineage) not started.
+
 ---
 
 ## Concepts
@@ -14,9 +16,9 @@ A lightweight JSON file (~5 KB) capturing the full codewise state of an installa
 - **Custom nodes**: Each node's identity, type (CNR/git/file), version or commit, and enabled/disabled state
 - **ComfyUI version**: The `comfyui_ref` from `manifest.json` plus the actual git HEAD commit (these may differ after a commit-based update)
 
-Soft snapshots are cheap and automatic. They are saved on every ComfyUI boot where the state differs from the last snapshot.
+Soft snapshots are cheap and automatic. They are saved on every ComfyUI boot or Manager-triggered restart where the state differs from the last snapshot.
 
-### Hard Snapshot
+### Hard Snapshot (Not Implemented — Phase 4)
 
 A full copy of the installation (~4.5 GB on Windows/NVIDIA). This is **not a new concept** — it is the existing Copy Installation feature. A hard snapshot is simply a copied installation with metadata linking it to the source installation's timeline.
 
@@ -79,7 +81,7 @@ Stored per-installation in `{installPath}/.launcher/snapshots/`:
 |-------|-------------|
 | `version` | Schema version (always `1` for now) |
 | `createdAt` | ISO 8601 timestamp |
-| `trigger` | What caused this snapshot: `"boot"` (auto on ComfyUI start), `"manual"` (user-initiated), `"pre-update"` (auto before update) |
+| `trigger` | What caused this snapshot: `"boot"` (cold launch), `"restart"` (Manager-triggered restart), `"manual"` (user-initiated), `"pre-update"` (auto before update) |
 | `label` | Optional user-provided label (null for auto snapshots) |
 | `comfyui.ref` | The `comfyui_ref` from `manifest.json` (e.g., a tag like `v0.3.10`) |
 | `comfyui.commit` | Actual git HEAD commit hash of `ComfyUI/` (may differ from ref after commit-based updates) |
@@ -90,9 +92,10 @@ Stored per-installation in `{installPath}/.launcher/snapshots/`:
 | `customNodes[].dirName` | Directory name in `custom_nodes/` (for CNR nodes, differs from `id`) |
 | `pipPackages` | Map of package name → version string from `uv pip freeze` |
 
-**Filename format:** `{timestamp}-{trigger}.json`
-- Timestamp: `YYYYMMDD_HHmmss` (e.g., `20260226_120000`)
-- Examples: `20260226_120000-boot.json`, `20260226_143000-pre-update.json`, `20260226_150000-manual.json`
+**Filename format:** `{timestamp}-{trigger}-{suffix}.json`
+- Timestamp: `YYYYMMDD_HHmmss_mmm` (includes milliseconds for ordering precision)
+- Suffix: 6-character random hex string (prevents collisions from rapid captures)
+- Examples: `20260226_120000_123-boot-a1b2c3.json`, `20260226_143000_456-pre-update-d4e5f6.json`
 
 ### Installation Metadata Additions
 
@@ -100,14 +103,14 @@ In `installations.json`, each Standalone installation gains:
 
 ```json
 {
-  "lastSnapshot": "20260226_120000-boot",
+  "lastSnapshot": "20260226_120000_123-boot-a1b2c3",
   "snapshotCount": 12
 }
 ```
 
-`lastSnapshot` is the filename stem of the most recent snapshot. Used for quick change detection without reading the snapshot file — but the actual diff is done by comparing the captured state against the live environment, not by comparing snapshot filenames.
+`lastSnapshot` is the filename of the most recent snapshot. Used for quick change detection without reading the snapshot file — but the actual diff is done by comparing the captured state against the live environment, not by comparing snapshot filenames.
 
-`snapshotCount` is a cached count for display purposes.
+`snapshotCount` is a cached count for display purposes, recomputed from disk when snapshots are added or removed.
 
 ---
 
@@ -115,25 +118,37 @@ In `installations.json`, each Standalone installation gains:
 
 ### When to Capture
 
-A soft snapshot is captured **on every ComfyUI process start** — both cold launches from the Launcher and Manager-triggered restarts (detected via the `.reboot` marker in `ipc.ts:1352-1364`). The flow:
+A soft snapshot is captured **on every ComfyUI process start** — both cold launches from the Launcher and Manager-triggered restarts (detected via the `.reboot` marker in `ipc.ts`). The flow:
 
 1. ComfyUI process starts (or restarts)
 2. The Launcher captures the current environment state
-3. Compares against the last saved snapshot
-4. If anything changed → save a new snapshot
-5. If nothing changed → skip
+3. For `boot` triggers: compares against the last saved snapshot; if unchanged, skips
+4. For `restart` triggers: always saves (Manager may have changed state), then deduplicates intermediate restarts
+5. For `manual`/`pre-update` triggers: always saves unconditionally
 
 A ComfyUI **version change** also triggers a snapshot even if no pip packages or custom nodes changed (the plan explicitly requires this).
+
+### Restart Deduplication
+
+When Manager installs a custom node, it triggers multiple restarts — one for the node install, then another after pip packages are installed. This produces intermediate snapshots that capture a partial state (node present, but pip deps not yet installed). The `deduplicateRestartSnapshot` function detects this pattern:
+
+- If two consecutive `restart` snapshots have identical ComfyUI version and custom nodes but differ only in pip packages, the older one is removed
+- Only unlabeled restart snapshots are candidates for deduplication
+- This keeps the snapshot history clean without losing meaningful state transitions
 
 ### Where to Hook
 
 The snapshot capture runs **after** ComfyUI's process is spawned but doesn't block the UI — it runs in the background. Two hook points in `ipc.ts`:
 
-1. **Cold launch** — after `tryLaunch()` succeeds and the session is registered (around line 1349, after `writePortLock`). The snapshot captures state before the user interacts with ComfyUI.
+1. **Cold launch** — after `tryLaunch()` succeeds and the session is registered. The snapshot captures state before the user interacts with ComfyUI.
 
-2. **Manager restart** — inside `attachExitHandler` when `checkRebootMarker(sessionPath)` is true (line 1354). After respawning, trigger another snapshot capture. This catches custom node installs/uninstalls that the Manager performed before requesting the restart.
+2. **Manager restart** — inside `attachExitHandler` when `checkRebootMarker(sessionPath)` is true. After respawning, trigger another snapshot capture. This catches custom node installs/uninstalls that the Manager performed before requesting the restart.
 
 Both hooks call the same `captureSnapshotIfChanged(installation)` function.
+
+### Initial Snapshot
+
+An initial `boot` snapshot is also captured during `postInstall` (after environment setup completes). This ensures the detail view shows a "Current" snapshot immediately after installation, before the user ever launches ComfyUI.
 
 ### Capture Cost
 
@@ -144,7 +159,7 @@ Both hooks call the same `captureSnapshotIfChanged(installation)` function.
 
 ### Auto-Pruning
 
-Keep the last **50 auto snapshots** (`trigger: "boot"`) per installation. Manual and pre-update snapshots are never auto-pruned. At ~5 KB each, 50 auto snapshots = ~250 KB — negligible.
+Keep the last **50 auto snapshots** (`trigger: "boot"` or `"restart"`) per installation. Manual and pre-update snapshots are never auto-pruned. At ~5 KB each, 50 auto snapshots = ~250 KB — negligible.
 
 ---
 
@@ -177,20 +192,30 @@ async function scanCustomNodes(comfyuiDir: string): Promise<ScannedNode[]>
 | Neither (directory) | `git` (fallback) | Directory name | None |
 | `.py` file (not directory) | `file` | Filename | None |
 
-**Git operations** use direct file reads (`.git/HEAD`, `.git/refs/heads/`, `.git/config`) — no spawned processes, no git binary dependency:
+**Stable node key:** `nodeKey(node)` returns `${type}:${dirName}`, used for snapshot comparisons and diffs. If a node changes type (e.g., was git, now CNR with same dirName), they produce different keys and are treated as a remove + add — this is correct behavior since the install mechanism changed.
+
+### 2. Git Operations — `lib/git.ts`
+
+**Read-only operations** (used for capture — no git binary needed):
 
 ```typescript
-function readGitHead(nodePath: string): string | null {
-  // Read .git/HEAD → "ref: refs/heads/main" → read refs/heads/main → sha
-  // Or if detached: HEAD contains the sha directly
-}
-
-function readGitRemoteUrl(nodePath: string): string | null {
-  // Parse .git/config → [remote "origin"] → url = ...
-}
+function resolveGitDir(repoPath: string): string | null    // Handles worktrees/submodules
+function readGitHead(repoPath: string): string | null       // Resolves HEAD → commit sha
+function readGitRemoteUrl(repoPath: string): string | null  // Parses .git/config for origin URL
+function hasGitDir(nodePath: string): boolean               // Quick existence check
 ```
 
-### 2. Pip Inspector — `lib/pip.ts`
+Git remote URLs are redacted via `redactUrl()` to strip embedded credentials before storing in snapshots. Symbolic ref resolution includes a path-traversal guard (ref path must stay within `.git/`).
+
+**Write operations** (used for restore — requires git binary in PATH):
+
+```typescript
+function isGitAvailable(): Promise<boolean>                              // Checks git --version
+function gitClone(url, dest, sendOutput): Promise<number>                // git clone
+function gitFetchAndCheckout(repoPath, commit, sendOutput): Promise<number>  // git fetch origin && git checkout
+```
+
+### 3. Pip Inspector — `lib/pip.ts`
 
 Wraps `uv pip freeze` to capture the Python environment state.
 
@@ -201,9 +226,44 @@ async function pipFreeze(
 ): Promise<Record<string, string>>
 ```
 
-Returns a map of `packageName → version`. Parses `uv pip freeze` output (one `package==version` per line). Editable packages (installed via `-e`) are recorded with their URL/path as the version string.
+Returns a map of `packageName → version`. Parses `uv pip freeze` output (one `package==version` per line). Handles three output formats:
+- Standard: `package==version` → `{ package: version }`
+- Editable: `-e git+https://...@commit#egg=name` → `{ name: "-e ..." }`
+- Direct reference (PEP 508): `package @ https://...` → `{ package: "https://..." }`
 
-### 3. Snapshot Manager — `lib/snapshots.ts`
+### 4. CNR Registry Client — `lib/cnr.ts`
+
+Native implementation of the ComfyUI Node Registry install protocol. Does not depend on ComfyUI-Manager — works even if Manager is not installed.
+
+```typescript
+function getCnrInstallInfo(nodeId, version?): Promise<CnrInstallInfo | null>
+function installCnrNode(nodeId, version, customNodesDir, sendOutput): Promise<string[]>
+function switchCnrVersion(nodeId, newVersion, nodePath, sendOutput): Promise<string[]>
+```
+
+**CNR install protocol:**
+1. `GET https://api.comfy.org/nodes/{id}/install?version={v}` → get `downloadUrl`
+2. Download zip to temp file
+3. Extract into `custom_nodes/{nodeId}/`
+4. Write `.tracking` file listing all extracted files (one relative path per line)
+5. Clean up temp file
+
+**CNR version switch protocol:**
+1. Read old `.tracking` file to get the old file list
+2. Download and extract new version to a **temp directory** (not directly into the node path — this is critical for accurate garbage detection)
+3. Walk the temp directory to get the true new file list
+4. Copy extracted files into the node path (overwriting existing files)
+5. Diff old vs new file lists → identify garbage files (in old but not in new)
+6. Delete garbage files and their empty parent directories
+7. Write new `.tracking` file
+
+The temp-directory extraction step is essential: extracting directly into the node path and then walking it would return the union of old+new files, making garbage detection impossible.
+
+**Security:** `nodeId` is validated via `isSafePathComponent()` before any filesystem or network operations. API URL parameters are URI-encoded.
+
+**`.tracking` compatibility:** Our implementation walks the extracted directory to build the file list (excluding the `.tracking` file itself). Manager uses `zipfile.namelist()`. Both produce equivalent results — our approach excludes directory-only entries, but Manager's garbage collection only removes files and empty dirs anyway.
+
+### 5. Snapshot Manager — `lib/snapshots.ts`
 
 Core snapshot operations:
 
@@ -211,7 +271,7 @@ Core snapshot operations:
 interface Snapshot {
   version: 1
   createdAt: string
-  trigger: 'boot' | 'manual' | 'pre-update'
+  trigger: 'boot' | 'restart' | 'manual' | 'pre-update'
   label: string | null
   comfyui: {
     ref: string
@@ -227,19 +287,19 @@ interface Snapshot {
 async function captureSnapshotIfChanged(
   installPath: string,
   installation: InstallationRecord,
-  trigger: 'boot' | 'manual' | 'pre-update'
-): Promise<{ saved: boolean; filename?: string }>
+  trigger: 'boot' | 'restart' | 'manual' | 'pre-update'
+): Promise<{ saved: boolean; filename?: string; deduplicated?: string }>
 
 // Save a snapshot unconditionally (used by manual save and pre-update)
 async function saveSnapshot(
   installPath: string,
   installation: InstallationRecord,
-  trigger: 'boot' | 'manual' | 'pre-update',
+  trigger: 'boot' | 'restart' | 'manual' | 'pre-update',
   label?: string
 ): Promise<string>  // returns filename
 
 // List all snapshots for an installation, newest first
-async function listSnapshots(installPath: string): Promise<Snapshot[]>
+async function listSnapshots(installPath: string): Promise<SnapshotEntry[]>
 
 // Load a specific snapshot
 async function loadSnapshot(installPath: string, filename: string): Promise<Snapshot>
@@ -248,28 +308,23 @@ async function loadSnapshot(installPath: string, filename: string): Promise<Snap
 async function deleteSnapshot(installPath: string, filename: string): Promise<void>
 
 // Diff two snapshots (or a snapshot against current state)
-function diffSnapshots(
-  a: Snapshot,
-  b: Snapshot
-): SnapshotDiff
+function diffSnapshots(a: Snapshot, b: Snapshot): SnapshotDiff
 
 // Prune old auto snapshots beyond the retention limit
 async function pruneAutoSnapshots(installPath: string, keep: number): Promise<number>
 ```
 
+**Concurrency:** All snapshot CRUD operations are protected by a per-install mutex (`withLock`). Snapshot file writes use atomic rename (write to `.tmp`, then rename).
+
 **Change detection** (`captureSnapshotIfChanged`):
 
 1. Read the last snapshot file (from `installation.lastSnapshot`)
 2. Capture current state: `scanCustomNodes()` + `pipFreeze()` + read `manifest.json` + read git HEAD
-3. Compare:
-   - `comfyui.commit` changed? → changed
-   - `comfyui.ref` changed? → changed
-   - Custom nodes list differs (added/removed/version changed/enabled changed)? → changed
-   - Pip packages differ (added/removed/version changed)? → changed
-4. If changed → save new snapshot, update `installation.lastSnapshot` and `snapshotCount`
-5. If unchanged → return `{ saved: false }`
+3. For `boot` triggers only: compare against last snapshot. If unchanged, return `{ saved: false }`
+4. For `restart` triggers: always save, then attempt deduplication of intermediate restart snapshots
+5. Save new snapshot, update `installation.lastSnapshot` and `snapshotCount`
 
-### 4. Snapshot Diff
+### 6. Snapshot Diff
 
 ```typescript
 interface SnapshotDiff {
@@ -298,74 +353,162 @@ interface SnapshotDiff {
 
 ### In `lib/ipc.ts`
 
-After a successful launch (line ~1349):
+After a successful launch:
 
 ```typescript
 // After session is registered, capture snapshot in background
-captureSnapshotIfChanged(inst.installPath, inst, 'boot')
-  .then(({ saved, filename }) => {
-    if (saved) {
-      installations.update(installationId, {
-        lastSnapshot: filename,
-        snapshotCount: (inst.snapshotCount as number || 0) + 1,
-      })
-    }
-  })
-  .catch((err) => console.warn('Snapshot capture failed:', err))
-```
-
-Inside `attachExitHandler`, when a Manager restart is detected (line ~1354):
-
-```typescript
-if (checkRebootMarker(sessionPath)) {
-  sendOutput('\n--- ComfyUI restarting ---\n\n')
-  const spawned = spawnComfy()
-  // ... existing restart logic ...
-
-  // Capture snapshot after restart (Manager may have changed packages/nodes)
-  const currentInst = await installations.get(installationId)
-  if (currentInst) {
-    captureSnapshotIfChanged(currentInst.installPath, currentInst, 'boot')
-      .then(({ saved, filename }) => {
-        if (saved) {
-          installations.update(installationId, {
-            lastSnapshot: filename,
-            snapshotCount: (currentInst.snapshotCount as number || 0) + 1,
-          })
-        }
-      })
-      .catch((err) => console.warn('Snapshot capture failed:', err))
-  }
-  return
+if (inst.sourceId === 'standalone') {
+  captureSnapshotIfChanged(inst.installPath, inst, 'boot')
+    .then(async ({ saved, filename }) => {
+      if (saved) {
+        const snapshotCount = await getSnapshotCount(inst.installPath)
+        installations.update(installationId, { lastSnapshot: filename, snapshotCount })
+      }
+    })
+    .catch((err) => console.warn('Snapshot capture failed:', err))
 }
 ```
 
-### In `sources/standalone.ts`
-
-Before `update-comfyui` action executes (line ~605, after the git check):
+Inside `attachExitHandler`, when a Manager restart is detected:
 
 ```typescript
-// Auto-snapshot before update
-await saveSnapshot(installPath, installation, 'pre-update', 'before-update')
+// Capture snapshot after Manager-triggered restart
+if (inst.sourceId === 'standalone') {
+  installations.get(installationId).then((currentInst) => {
+    if (!currentInst) return
+    captureSnapshotIfChanged(currentInst.installPath, currentInst, 'restart')
+      .then(async ({ saved, filename }) => {
+        if (saved) {
+          const snapshotCount = await getSnapshotCount(currentInst.installPath)
+          installations.update(installationId, { lastSnapshot: filename, snapshotCount })
+        }
+      })
+      .catch((err) => console.warn('Snapshot capture failed:', err))
+  })
+}
+```
+
+**Running-session guard:** The `snapshot-restore` action is blocked at the IPC level if ComfyUI is running on that installation (`_runningSessions.has(installationId)`). This returns `snapshotRestoreStopRequired` without reaching the handler.
+
+### In `sources/standalone.ts`
+
+**Initial snapshot** — captured during `postInstall`, after the default environment is created:
+
+```typescript
+const filename = await snapshots.saveSnapshot(installation.installPath, installation, 'boot')
+const snapshotCount = await snapshots.getSnapshotCount(installation.installPath)
+await update({ lastSnapshot: filename, snapshotCount })
+```
+
+**Pre-update snapshot** — captured inside the `update-comfyui` handler before any changes:
+
+```typescript
+await snapshots.saveSnapshot(installPath, installation, 'pre-update', 'before-update')
 ```
 
 ---
 
-## Hard Snapshots
+## Snapshot Restore
 
-A hard snapshot is created via the existing Copy Installation flow (`performCopy` in `ipc.ts:139-194`). The only addition is metadata linking the copy to its source:
+Restoring a soft snapshot reverts the Python environment and custom nodes to the state captured in that snapshot. This is a two-phase operation that requires ComfyUI to be stopped.
 
-```json
-{
-  "copiedFrom": "inst-1234567890",
-  "copiedAt": "2026-02-26T15:00:00.000Z",
-  "copyReason": "manual" | "pre-update"
-}
-```
+### Prerequisites
 
-These fields are added to the new installation's record in `installations.json`. They enable the history view to show the lineage between installations.
+- **ComfyUI must not be running.** Enforced at the IPC level in `ipc.ts` — the `snapshot-restore` action checks `_runningSessions.has(installationId)` and returns an error if true.
 
-No special "rollback to hard snapshot" mechanism. The user launches the old copy. The current installation and the copy are independent — the user can run either, delete either, or keep both.
+### Phase Ordering: Nodes First, Then Pip
+
+The restore handler in `standalone.ts` runs two phases in sequence:
+
+1. **Restore custom nodes** (`restoreCustomNodes`) — installs, switches versions, enables/disables nodes. Node installs may add pip dependencies via `requirements.txt`.
+2. **Restore pip packages** (`restorePipPackages`) — syncs the Python environment to the exact target state, adding missing packages and removing extras.
+
+This ordering matches ComfyUI-Manager's approach and prevents a scenario where pip restore removes packages that a subsequent node install would immediately re-add.
+
+### Custom Node Restore (Phase 3)
+
+Handles all three node types:
+
+#### CNR nodes (registry-installed, identified by `.tracking` file)
+
+| Current state | Target state | Action |
+|---|---|---|
+| Missing | In snapshot | Install from registry via `installCnrNode` |
+| Version mismatch | In snapshot | Version switch via `switchCnrVersion` |
+| Enabled | Disabled in snapshot | Move to `.disabled/` |
+| Disabled | Enabled in snapshot | Move from `.disabled/` to `custom_nodes/` |
+| Match | Match | Skip |
+
+#### Git nodes (cloned repos, identified by `.git/` directory)
+
+| Current state | Target state | Action |
+|---|---|---|
+| Missing | In snapshot (has URL) | `git clone {url}`, then `git checkout {commit}` |
+| Commit mismatch | In snapshot | `git fetch origin`, then `git checkout {commit}` |
+| Enabled | Disabled in snapshot | Move to `.disabled/` |
+| Disabled | Enabled in snapshot | Move from `.disabled/` to `custom_nodes/` |
+| Match | Match | Skip |
+
+Git operations require the `git` binary in PATH. Availability is checked once upfront via `isGitAvailable()`. If unavailable, all git node operations are skipped with a clear message listing which nodes were affected.
+
+#### Standalone `.py` files
+
+| Current state | Target state | Action |
+|---|---|---|
+| Missing | In snapshot | Report to user (cannot auto-restore) |
+| Present, not in snapshot | — | Move to `.disabled/` |
+| Match | Match | Skip |
+
+#### Post-install scripts
+
+After any node install or version switch, run post-install scripts:
+1. If `requirements.txt` exists: `uv pip install -r requirements.txt` (filtering out `torch`/`torchvision`/`torchaudio`/`torchsde` lines to prevent PyTorch breakage)
+2. If `install.py` exists: `{python} -s install.py` in the node directory
+
+Post-install failures are non-fatal — reported but do not block the restore.
+
+#### Safety measures
+
+- **ComfyUI-Manager is never modified.** Any node whose `id` contains `comfyui-manager` (case-insensitive) is skipped.
+- **Path traversal protection.** `nodeId` and `dirName` from snapshot data are validated via `isSafePathComponent()` before use in filesystem operations.
+- **No backup/revert for node operations.** Unlike pip (which has a targeted backup), each node operation is individually atomic — install, switch, enable, or disable either succeeds or fails independently. Failed operations are tracked in `NodeRestoreResult.failed`.
+- **Enable/disable collision handling.** Both `disableNode` and `enableNode` remove any pre-existing destination directory before renaming, preventing `ENOTEMPTY` errors from partial prior restores.
+
+### Pip Package Restore (Phase 2)
+
+#### Safety: Targeted Pre-Restore Backup
+
+Before modifying the environment, create a temporary backup of only the packages that will change — their directories + `.dist-info/` folders + associated files identified from RECORD. Since the snapshot diff is already computed, we know exactly which packages will be installed, downgraded, or removed.
+
+This protects against partial restore failures — if the restore fails midway (e.g., network error, version unavailable), the backup is used to revert to the pre-restore state. The backup is deleted on successful completion.
+
+**Note:** A targeted backup typically yields 50-200 MB (vs 1-3 GB for a full `site-packages/` copy). `uv`'s cache likely already has wheels for the pre-restore versions, but the cache can be pruned, so it is not a reliable safety net on its own.
+
+#### Restore Flow
+
+1. **Capture current pip state** via `pipFreeze`
+2. **Compute diff** against the target snapshot's `pipPackages`
+3. **Create targeted backup** of packages that will be modified or removed
+4. **Install missing + upgrade/downgrade changed**: `uv pip install package1==version1 package2==version2 ...` (bulk first, one-by-one with `--no-deps` as fallback)
+5. **Remove extras**: Packages present in current environment but absent from snapshot, **except** protected packages
+6. **On failure**: Revert from backup, uninstall any newly-added packages, report errors
+7. **On success**: Delete backup
+
+#### Protected Packages
+
+Packages that are never modified during restore:
+- **Exact matches:** `pip`, `setuptools`, `wheel`, `uv`
+- **Prefix matches:** `torch*`, `nvidia*`, `triton*`, `cuda*`
+
+> **TODO (deferred):** Expand protection via index-URL detection (packages from PyTorch index) and transitive dependency analysis (packages required by protected packages). See `snapshots-phase3-plan.md` § Deferred Item.
+
+### Restore Results
+
+After both phases complete, the handler builds a combined summary and:
+- Saves a new `manual` snapshot labeled `after-restore` capturing the restored state
+- Reports total successes and failures
+- If pip restore had failures: the entire pip phase was reverted from backup, reported as `snapshotRestoreReverted`
+- If only node operations failed: pip restore still ran (node failures are non-blocking)
 
 ---
 
@@ -373,39 +516,13 @@ No special "rollback to hard snapshot" mechanism. The user launches the old copy
 
 ### Snapshot History Section (Detail View)
 
-The detail modal now uses a **tabbed layout** (PR #36). Each section has an optional `tab` property (`'status'`, `'update'`, or `'settings'`) and the `DetailSection` interface includes `tab?: string`. Sections with the same `tab` value appear together; the tab bar is rendered by `DetailModal.vue` using `availableTabs` computed from the sections.
+The snapshot history appears on the **`'status'` tab** of the detail modal. It shows the 20 most recent snapshots with the newest marked as "★ Current".
 
-The snapshot history section should go on the **`'status'` tab**, since it describes the current and historical state of the installation. It sits after the Install Info section:
+Each snapshot (except the current one) has two actions:
+- **Restore** — restores the installation to that snapshot's state (with confirmation dialog)
+- **Delete** — removes the snapshot file
 
-```typescript
-{
-  tab: 'status',
-  title: t('standalone.snapshotHistory'),
-  description: t('standalone.snapshotHistoryDesc', { count: snapshots.length }),
-  collapsed: snapshots.length > 0,  // collapsed by default if there are snapshots
-  items: snapshots.slice(0, 20).map(s => ({
-    label: formatSnapshotLabel(s),  // "Boot · Feb 26, 2026 12:00 PM" or "Manual: my-label · ..."
-    active: s.filename === installation.lastSnapshot,
-    actions: [
-      { id: 'snapshot-view', label: t('standalone.viewSnapshot'),
-        data: { file: s.filename } },
-      ...(s.trigger !== 'boot' || s.label ? [] : [
-        { id: 'snapshot-delete', label: t('common.delete'), style: 'danger',
-          data: { file: s.filename } },
-      ]),
-    ],
-  })),
-  actions: [
-    { id: 'snapshot-save', label: t('standalone.saveSnapshot'),
-      prompt: {
-        title: t('standalone.saveSnapshotTitle'),
-        message: t('standalone.saveSnapshotMessage'),
-        placeholder: t('standalone.snapshotLabelPlaceholder'),
-        field: 'label',
-      } },
-  ],
-}
-```
+A **Save Snapshot** button allows manual snapshot creation with an optional label.
 
 ### Snapshot View (Future)
 
@@ -416,81 +533,20 @@ When the user clicks "View" on a snapshot, show a diff against the current state
 - Pip packages added/removed/changed
 - Total package count comparison
 
-This is a read-only informational view. The implementation can use a modal or a dedicated page. Exact UI is deferred to implementation time.
-
-### Snapshot Restore (Phase 2)
-
-Restoring a soft snapshot means reverting the Python environment and custom nodes to the state captured in that snapshot. This is a multi-step operation that requires ComfyUI to be stopped.
-
-#### Prerequisites
-
-- **ComfyUI must not be running.** Any action that modifies the environment (restore, update, etc.) must check for a running ComfyUI process on that installation. If running, show a dialog: _"ComfyUI must be stopped to perform this action"_ with a **Stop** button that prompts to shut down the running instance.
-
-#### Safety: Targeted Pre-Restore Backup
-
-Before modifying the environment, create a temporary backup of only the packages that will change — their directories + `.dist-info/` folders + associated scripts in `Scripts/` (Windows) or `bin/` (Linux/macOS). Since the snapshot diff is already computed before restore begins, we know exactly which packages will be installed, downgraded, or removed.
-
-This protects against partial restore failures — if the restore fails midway (e.g., network error, version unavailable), the backup can be used to revert to the pre-restore state. The backup is deleted on successful completion.
-
-This is necessary because even an "undo" of a failed rollback could itself fail (e.g., network error), leaving the environment in a broken mixed state. A filesystem-level copy is the only reliable safety net.
-
-**Note:** A targeted backup typically yields 50-200 MB (vs 1-3 GB for a full `site-packages/` copy). `uv`'s cache likely already has wheels for the pre-restore versions, but the cache can be pruned, so it is not a reliable safety net on its own.
-
-#### Pip Package Restore
-
-1. **Install missing + downgrade/upgrade changed**: `uv pip install package1==version1 package2==version2 ...` for all packages in the snapshot that differ from the current state.
-2. **Remove extras**: Packages present in the current environment but absent from the snapshot should be uninstalled, **except** for protected packages. The protected set includes:
-   - PyTorch ecosystem: `torch`, `torchvision`, `torchaudio`, `nvidia-*` (matches Manager's skip list)
-   - Core tooling: `pip`, `setuptools`, `wheel`, `uv`
-   - Transitive dependencies of protected packages (determined by checking if a package is required by any protected/remaining package)
-3. **Failure handling**: Try bulk install first. On failure, fall back to one-by-one with `--no-deps` (matches Manager's approach). Track and report individual failures.
-
-> **TODO (deferred):** The protected package set should be expanded beyond the hardcoded list above. Consider identifying protected packages by their index URL (PyTorch index) rather than by name. This would automatically cover new CUDA packages without maintaining a list.
-
-#### Custom Node Restore
-
-The Launcher should handle custom node restore at parity with what ComfyUI-Manager's `restore_snapshot` does today (see `manager_core.py:3114`). The Manager handles three node categories:
-
-1. **CNR nodes** (registry-installed, identified by `.tracking` file):
-   - **Missing from snapshot**: Disable (move to `.disabled/`)
-   - **Version mismatch**: Switch version via CNR download + `.tracking` diff-based file cleanup
-   - **Missing from current**: Install from registry at the snapshot's version
-   - **Match**: Skip
-
-2. **Git nodes** (cloned repos, identified by `.git/` directory):
-   - **Missing from snapshot**: Disable
-   - **Commit mismatch**: `git fetch` + `git checkout {commit}` to restore exact commit
-   - **Missing from current**: Clone from remote URL, checkout to snapshot's commit
-   - **Match**: Skip
-
-3. **Standalone `.py` files**:
-   - **Missing from snapshot**: Disable (move to `.disabled/`)
-   - **Missing from current**: Report to user (cannot auto-restore a standalone file)
-   - **Match**: Skip
-
-4. **Post-install scripts**: After switching/installing nodes, run `requirements.txt` and `install.py` if present in the node directory (same as Manager does).
-
-**Note:** If custom node restore scope becomes too large for a single phase, it can be split: Phase 2a (pip restore only) → Phase 2b (custom node restore). The safety infrastructure (stop check, backup, failure handling) would ship in Phase 2a and be reused in Phase 2b.
-
-#### Integration with Update Rollback
-
-The git-based update rollback (`update_support_plan.md`) handles **ComfyUI code** — it switches the git ref. Snapshot restore handles **dependencies and custom nodes**. These are complementary, not overlapping:
-
-- A ComfyUI update should produce its own snapshot (already handled: `pre-update` trigger before, `boot` trigger after).
-- Rolling back a ComfyUI update means: git rollback to restore code, then snapshot restore to restore the dependency/node state from the pre-update snapshot.
-- There is no scenario where both operations conflict, because they operate on different layers.
+This is a read-only informational view. Not yet implemented. The data infrastructure (`diffSnapshots`) is ready.
 
 ---
 
 ## Integration with Update Flow
 
-The update flow in `standalone.ts` (`update-comfyui` action, line 578) already captures pre/post state via `markers` (pre-update HEAD, backup branch, etc.). Snapshots integrate naturally:
+The update flow in `standalone.ts` (`update-comfyui` action) integrates with snapshots:
 
-1. **Before update**: `saveSnapshot(installPath, installation, 'pre-update')` — captures exact pip + node state
+1. **Before update**: `saveSnapshot(installPath, installation, 'pre-update', 'before-update')` — captures exact pip + node state
 2. **After update**: The next ComfyUI boot auto-captures a `boot` snapshot with the new state
 3. **History**: The user can compare the pre-update snapshot against the post-update boot snapshot to see exactly what changed
+4. **Rollback**: Rolling back a ComfyUI update means: git rollback to restore code, then snapshot restore to restore the dependency/node state from the pre-update snapshot
 
-For `copy-update` (line 376): the copied installation inherits the source's snapshot history (since `.launcher/snapshots/` is inside the install directory and gets copied). The copy's first boot then creates a new snapshot showing the updated state.
+For `copy-update`: the copied installation inherits the source's snapshot history (since `.launcher/snapshots/` is inside the install directory and gets copied). The copy's first boot then creates a new snapshot showing the updated state.
 
 ---
 
@@ -500,11 +556,11 @@ For `copy-update` (line 376): the copied installation inherits the source's snap
 {installPath}/
 ├── .launcher/
 │   └── snapshots/
-│       ├── 20260220_090000-boot.json
-│       ├── 20260222_140000-boot.json
-│       ├── 20260225_100000-pre-update.json
-│       ├── 20260225_103000-boot.json
-│       └── 20260226_120000-manual.json
+│       ├── 20260220_090000_123-boot-a1b2c3.json
+│       ├── 20260222_140000_456-restart-d4e5f6.json
+│       ├── 20260225_100000_789-pre-update-a7b8c9.json
+│       ├── 20260225_103000_012-boot-d0e1f2.json
+│       └── 20260226_120000_345-manual-a3b4c5.json
 ├── standalone-env/
 ├── envs/
 │   └── default/
@@ -526,37 +582,48 @@ For `copy-update` (line 376): the copied installation inherits the source's snap
 
 ## Implementation Plan
 
-### Phase 1: Capture & Compare (Initial Scope)
+### Phase 1: Capture & Compare ✅
 
 New files:
-- `src/main/lib/nodes.ts` — Custom node scanner (`scanCustomNodes`, `readGitHead`, `readGitRemoteUrl`)
+- `src/main/lib/nodes.ts` — Custom node scanner (`scanCustomNodes`, `nodeKey`, `identifyNode`)
 - `src/main/lib/pip.ts` — Pip inspector (`pipFreeze`)
-- `src/main/lib/snapshots.ts` — Snapshot manager (`captureSnapshotIfChanged`, `saveSnapshot`, `listSnapshots`, `loadSnapshot`, `deleteSnapshot`, `diffSnapshots`, `pruneAutoSnapshots`)
+- `src/main/lib/snapshots.ts` — Snapshot manager (`captureSnapshotIfChanged`, `saveSnapshot`, `listSnapshots`, `loadSnapshot`, `deleteSnapshot`, `diffSnapshots`, `pruneAutoSnapshots`, `deduplicateRestartSnapshot`)
 
 Modified files:
-- `src/main/lib/ipc.ts` — Add snapshot capture hooks at launch and restart
-- `src/main/sources/standalone.ts` — Add snapshot history section (on `'status'` tab) to detail view; add pre-update snapshot to update action; add `snapshot-save`, `snapshot-view`, `snapshot-delete` action handlers
-- `src/main/installations.ts` — No schema changes needed (uses existing `[key: string]: unknown` flexibility)
-- `locales/en.json` — Add i18n keys for snapshot UI strings
+- `src/main/lib/git.ts` — Added `resolveGitDir`, `readGitHead`, `readGitRemoteUrl`, `hasGitDir`, `redactUrl`
+- `src/main/lib/ipc.ts` — Added snapshot capture hooks at launch and restart, running-session guard for restore
+- `src/main/sources/standalone.ts` — Added snapshot history section (on `'status'` tab), `snapshot-save`/`snapshot-delete` action handlers, initial snapshot in `postInstall`, pre-update snapshot in `update-comfyui`
+- `locales/en.json` — Added i18n keys for snapshot UI strings
 
-### Phase 2: Pip Restore
+### Phase 2: Pip Restore ✅
 
-- Add `snapshot-restore` action to `standalone.ts`
-- Enforce "ComfyUI must be stopped" prerequisite — dialog with Stop button if running
-- Implement `site-packages/` backup before restore, auto-delete on success, auto-revert on failure
-- Implement pip restore in `lib/snapshots.ts`: install missing/changed packages, remove extras (with protected package set)
-- Report restore results: successes, failures, skipped protected packages
-- Add protected package list: `torch`, `torchvision`, `torchaudio`, `nvidia-*`, `pip`, `setuptools`, `wheel`, `uv`
+Added to `src/main/lib/snapshots.ts`:
+- `restorePipPackages` — full pip restore with bulk/fallback install strategy
+- `isProtectedPackage` — hardcoded prefix/exact matching for torch/nvidia/pip/etc.
+- `createTargetedBackup` / `restoreFromBackup` — filesystem-level backup and revert
+- `findDistInfoDir` / `findPackageEntries` / `normalizeDistInfoName` — package-to-filesystem mapping via RECORD files
+- `runUvPip` — spawns uv pip commands with output streaming
 
-### Phase 3: Custom Node Restore
+Added to `src/main/sources/standalone.ts`:
+- `snapshot-restore` action handler
 
-- Extend `snapshot-restore` to handle custom node state (CNR version switch, git checkout, disable/enable, install missing)
-- Run post-install scripts (`requirements.txt`, `install.py`) for switched/installed nodes
-- Report node-level results: installed, switched, disabled, enabled, skipped, failed
-- Handle standalone `.py` files: disable extras, report missing (cannot auto-restore)
-- Reuse Phase 2 safety infrastructure (stop check, backup, failure handling)
+### Phase 3: Custom Node Restore ✅
 
-### Phase 4: Hard Snapshot Lineage
+New files:
+- `src/main/lib/cnr.ts` — CNR registry client (`getCnrInstallInfo`, `installCnrNode`, `switchCnrVersion`, `walkDir`, `isSafePathComponent`)
+
+Added to `src/main/lib/git.ts`:
+- `isGitAvailable`, `gitClone`, `gitFetchAndCheckout`
+
+Added to `src/main/lib/snapshots.ts`:
+- `restoreCustomNodes` — orchestrates all node restore operations
+- `isManagerNode`, `disableNode`, `enableNode`, `runPostInstallScripts`
+- `NodeRestoreResult` interface
+
+Updated in `src/main/sources/standalone.ts`:
+- `snapshot-restore` handler now runs two phases (nodes first, then pip) with combined summary
+
+### Phase 4: Hard Snapshot Lineage (Not Started)
 
 - Add `copiedFrom` / `copiedAt` / `copyReason` metadata to `performCopy`
 - Build a timeline view showing installation lineage (which install was copied from which)
@@ -572,12 +639,16 @@ Modified files:
 
 3. **No dependency on ComfyUI-Manager's snapshot format.** The Launcher reads the same filesystem markers (`.tracking`, `.git/`, `pyproject.toml`) but maintains its own snapshot format. This avoids coupling to Manager's internal changes and works even if Manager is not installed.
 
-4. **Git operations via file reads, not spawned processes.** Reading `.git/HEAD` and `.git/config` directly is fast, has no dependencies, and provides the limited info we need (commit hash, remote URL). Full git operations (checkout, fetch) are only needed for restore/update, not for capture.
+4. **Git operations split by phase.** Capture (Phase 1) uses direct file reads (`.git/HEAD`, `.git/config`) — fast, no dependencies. Restore (Phase 3) spawns the `git` binary for clone/fetch/checkout — these require the git CLI, which is checked upfront and fails gracefully if unavailable.
 
-5. **Restore is split across Phases 2 and 3.** Pip restore (Phase 2) ships first with safety infrastructure (stop check, `site-packages/` backup). Custom node restore (Phase 3) builds on the same infrastructure. This split keeps each phase focused and shippable independently.
+5. **Restore split across Phases 2 and 3.** Pip restore (Phase 2) shipped first with safety infrastructure (stop check, `site-packages/` backup). Custom node restore (Phase 3) builds on the same infrastructure. This split kept each phase focused and shippable independently.
 
-7. **Environment-modifying operations require ComfyUI to be stopped.** Restore, update, and any action that modifies pip packages or custom nodes must verify ComfyUI is not running on that installation. On Windows especially, file locks on loaded `.pyd`/`.dll` files will cause pip operations to fail. A dialog prompts the user to stop the instance, with a button to do so.
+6. **Environment-modifying operations require ComfyUI to be stopped.** Enforced at the IPC level for `snapshot-restore`. On Windows especially, file locks on loaded `.pyd`/`.dll` files will cause pip operations to fail.
 
-8. **Targeted pre-restore backup.** Before modifying the environment, back up only the packages that will change — their directories + `.dist-info/` folders + associated scripts in `Scripts/` (Windows) or `bin/` (Linux/macOS). Since we already compute the snapshot diff, we know exactly which packages will be installed/downgraded/removed. This typically yields 50-200 MB instead of copying all of `site-packages/` (1-3 GB). Building wheels from installed packages is not a supported workflow in `pip` or `uv`, so a targeted filesystem copy is the most reliable lightweight option. The backup is deleted on success. Note: `uv`'s cache likely has wheels for the versions we're rolling back *to* (fast reinstall without network), but the cache can be pruned, so it's not a reliable safety net on its own.
+7. **Targeted pre-restore backup.** Back up only the packages that will change. This typically yields 50-200 MB instead of copying all of `site-packages/` (1-3 GB). The backup is deleted on success.
 
-6. **50 auto-snapshot retention limit.** Generous enough to cover weeks of daily use. At ~5 KB each, disk cost is negligible (~250 KB total). Manual and pre-update snapshots are never pruned — they're intentional and the user manages them.
+8. **50 auto-snapshot retention limit.** Generous enough to cover weeks of daily use. At ~5 KB each, disk cost is negligible (~250 KB total). Manual and pre-update snapshots are never pruned — they're intentional and the user manages them.
+
+9. **Restart deduplication.** Manager install sequences produce multiple restarts with intermediate states. Deduplicating consecutive restart snapshots with identical node state keeps the history clean.
+
+10. **Nodes restored before pip.** Node installs may add pip dependencies via `requirements.txt`. Restoring nodes first, then syncing pip state, prevents removing packages that would be immediately re-added.
