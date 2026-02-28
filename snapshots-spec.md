@@ -418,14 +418,67 @@ When the user clicks "View" on a snapshot, show a diff against the current state
 
 This is a read-only informational view. The implementation can use a modal or a dedicated page. Exact UI is deferred to implementation time.
 
-### Snapshot Restore (Phase 2 — Out of Scope for Initial Implementation)
+### Snapshot Restore (Phase 2)
 
-Restoring a soft snapshot means:
+Restoring a soft snapshot means reverting the Python environment and custom nodes to the state captured in that snapshot. This is a multi-step operation that requires ComfyUI to be stopped.
 
-1. **Pip packages**: `uv pip install package1==version1 package2==version2 ...` for all packages in the snapshot. Skip PyTorch packages (`torch`, `torchvision`, `torchaudio`).
-2. **Custom node diff**: Report which nodes are different (added/removed/version changed). Actual node install/uninstall is complex and deferred.
+#### Prerequisites
 
-This is documented here for completeness but is **not part of the initial implementation**. The initial scope is: capture, compare, and display snapshots.
+- **ComfyUI must not be running.** Any action that modifies the environment (restore, update, etc.) must check for a running ComfyUI process on that installation. If running, show a dialog: _"ComfyUI must be stopped to perform this action"_ with a **Stop** button that prompts to shut down the running instance.
+
+#### Safety: Targeted Pre-Restore Backup
+
+Before modifying the environment, create a temporary backup of only the packages that will change — their directories + `.dist-info/` folders + associated scripts in `Scripts/` (Windows) or `bin/` (Linux/macOS). Since the snapshot diff is already computed before restore begins, we know exactly which packages will be installed, downgraded, or removed.
+
+This protects against partial restore failures — if the restore fails midway (e.g., network error, version unavailable), the backup can be used to revert to the pre-restore state. The backup is deleted on successful completion.
+
+This is necessary because even an "undo" of a failed rollback could itself fail (e.g., network error), leaving the environment in a broken mixed state. A filesystem-level copy is the only reliable safety net.
+
+**Note:** A targeted backup typically yields 50-200 MB (vs 1-3 GB for a full `site-packages/` copy). `uv`'s cache likely already has wheels for the pre-restore versions, but the cache can be pruned, so it is not a reliable safety net on its own.
+
+#### Pip Package Restore
+
+1. **Install missing + downgrade/upgrade changed**: `uv pip install package1==version1 package2==version2 ...` for all packages in the snapshot that differ from the current state.
+2. **Remove extras**: Packages present in the current environment but absent from the snapshot should be uninstalled, **except** for protected packages. The protected set includes:
+   - PyTorch ecosystem: `torch`, `torchvision`, `torchaudio`, `nvidia-*` (matches Manager's skip list)
+   - Core tooling: `pip`, `setuptools`, `wheel`, `uv`
+   - Transitive dependencies of protected packages (determined by checking if a package is required by any protected/remaining package)
+3. **Failure handling**: Try bulk install first. On failure, fall back to one-by-one with `--no-deps` (matches Manager's approach). Track and report individual failures.
+
+> **TODO (deferred):** The protected package set should be expanded beyond the hardcoded list above. Consider identifying protected packages by their index URL (PyTorch index) rather than by name. This would automatically cover new CUDA packages without maintaining a list.
+
+#### Custom Node Restore
+
+The Launcher should handle custom node restore at parity with what ComfyUI-Manager's `restore_snapshot` does today (see `manager_core.py:3114`). The Manager handles three node categories:
+
+1. **CNR nodes** (registry-installed, identified by `.tracking` file):
+   - **Missing from snapshot**: Disable (move to `.disabled/`)
+   - **Version mismatch**: Switch version via CNR download + `.tracking` diff-based file cleanup
+   - **Missing from current**: Install from registry at the snapshot's version
+   - **Match**: Skip
+
+2. **Git nodes** (cloned repos, identified by `.git/` directory):
+   - **Missing from snapshot**: Disable
+   - **Commit mismatch**: `git fetch` + `git checkout {commit}` to restore exact commit
+   - **Missing from current**: Clone from remote URL, checkout to snapshot's commit
+   - **Match**: Skip
+
+3. **Standalone `.py` files**:
+   - **Missing from snapshot**: Disable (move to `.disabled/`)
+   - **Missing from current**: Report to user (cannot auto-restore a standalone file)
+   - **Match**: Skip
+
+4. **Post-install scripts**: After switching/installing nodes, run `requirements.txt` and `install.py` if present in the node directory (same as Manager does).
+
+**Note:** If custom node restore scope becomes too large for a single phase, it can be split: Phase 2a (pip restore only) → Phase 2b (custom node restore). The safety infrastructure (stop check, backup, failure handling) would ship in Phase 2a and be reused in Phase 2b.
+
+#### Integration with Update Rollback
+
+The git-based update rollback (`update_support_plan.md`) handles **ComfyUI code** — it switches the git ref. Snapshot restore handles **dependencies and custom nodes**. These are complementary, not overlapping:
+
+- A ComfyUI update should produce its own snapshot (already handled: `pre-update` trigger before, `boot` trigger after).
+- Rolling back a ComfyUI update means: git rollback to restore code, then snapshot restore to restore the dependency/node state from the pre-update snapshot.
+- There is no scenario where both operations conflict, because they operate on different layers.
 
 ---
 
@@ -486,14 +539,24 @@ Modified files:
 - `src/main/installations.ts` — No schema changes needed (uses existing `[key: string]: unknown` flexibility)
 - `locales/en.json` — Add i18n keys for snapshot UI strings
 
-### Phase 2: Restore (Future)
+### Phase 2: Pip Restore
 
 - Add `snapshot-restore` action to `standalone.ts`
-- Implement pip-only restore in `lib/snapshots.ts`
-- Report custom node diff to user
-- Integrate with the update rollback flow from `update_support_plan.md`
+- Enforce "ComfyUI must be stopped" prerequisite — dialog with Stop button if running
+- Implement `site-packages/` backup before restore, auto-delete on success, auto-revert on failure
+- Implement pip restore in `lib/snapshots.ts`: install missing/changed packages, remove extras (with protected package set)
+- Report restore results: successes, failures, skipped protected packages
+- Add protected package list: `torch`, `torchvision`, `torchaudio`, `nvidia-*`, `pip`, `setuptools`, `wheel`, `uv`
 
-### Phase 3: Hard Snapshot Lineage (Future)
+### Phase 3: Custom Node Restore
+
+- Extend `snapshot-restore` to handle custom node state (CNR version switch, git checkout, disable/enable, install missing)
+- Run post-install scripts (`requirements.txt`, `install.py`) for switched/installed nodes
+- Report node-level results: installed, switched, disabled, enabled, skipped, failed
+- Handle standalone `.py` files: disable extras, report missing (cannot auto-restore)
+- Reuse Phase 2 safety infrastructure (stop check, backup, failure handling)
+
+### Phase 4: Hard Snapshot Lineage
 
 - Add `copiedFrom` / `copiedAt` / `copyReason` metadata to `performCopy`
 - Build a timeline view showing installation lineage (which install was copied from which)
@@ -511,6 +574,10 @@ Modified files:
 
 4. **Git operations via file reads, not spawned processes.** Reading `.git/HEAD` and `.git/config` directly is fast, has no dependencies, and provides the limited info we need (commit hash, remote URL). Full git operations (checkout, fetch) are only needed for restore/update, not for capture.
 
-5. **Restore is Phase 2.** Capturing snapshots is straightforward and immediately useful (history, comparison, pre-update safety net). Restore is complex (pip version conflicts, custom node state management) and has diminishing returns since the update flow already handles its own rollback. Ship capture first, iterate on restore.
+5. **Restore is split across Phases 2 and 3.** Pip restore (Phase 2) ships first with safety infrastructure (stop check, `site-packages/` backup). Custom node restore (Phase 3) builds on the same infrastructure. This split keeps each phase focused and shippable independently.
+
+7. **Environment-modifying operations require ComfyUI to be stopped.** Restore, update, and any action that modifies pip packages or custom nodes must verify ComfyUI is not running on that installation. On Windows especially, file locks on loaded `.pyd`/`.dll` files will cause pip operations to fail. A dialog prompts the user to stop the instance, with a button to do so.
+
+8. **Targeted pre-restore backup.** Before modifying the environment, back up only the packages that will change — their directories + `.dist-info/` folders + associated scripts in `Scripts/` (Windows) or `bin/` (Linux/macOS). Since we already compute the snapshot diff, we know exactly which packages will be installed/downgraded/removed. This typically yields 50-200 MB instead of copying all of `site-packages/` (1-3 GB). Building wheels from installed packages is not a supported workflow in `pip` or `uv`, so a targeted filesystem copy is the most reliable lightweight option. The backup is deleted on success. Note: `uv`'s cache likely has wheels for the versions we're rolling back *to* (fast reinstall without network), but the cache can be pruned, so it's not a reliable safety net on its own.
 
 6. **50 auto-snapshot retention limit.** Generous enough to cover weeks of daily use. At ~5 KB each, disk cost is negligible (~250 KB total). Manual and pre-update snapshots are never pruned — they're intentional and the user manages them.
