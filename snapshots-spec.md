@@ -2,7 +2,7 @@
 
 Consolidated spec for environment snapshots in ComfyUI-Launcher. Captures pip packages, custom nodes, and ComfyUI version at boot granularity, enabling history tracking and rollback.
 
-**Status:** Phases 1–3 implemented. Phase 4 (Hard Snapshot Lineage) not started.
+**Status:** Phases 1–4 implemented.
 
 ---
 
@@ -18,11 +18,13 @@ A lightweight JSON file (~5 KB) capturing the full codewise state of an installa
 
 Soft snapshots are cheap and automatic. They are saved on every ComfyUI boot or Manager-triggered restart where the state differs from the last snapshot.
 
-### Hard Snapshot (Not Implemented — Phase 4)
+### Hard Snapshot
 
 A full copy of the installation (~4.5 GB on Windows/NVIDIA). This is **not a new concept** — it is the existing Copy Installation feature. A hard snapshot is simply a copied installation with metadata linking it to the source installation's timeline.
 
 Hard snapshots are installations. They appear in the installation list. Users "roll back" to a hard snapshot by launching that installation. No special rollback semantics, no deletion of "future" states — custom nodes store data inside their directories, so destructive rollback would lose user content.
+
+When a copy is created (via Copy Install, Copy & Update, or Release Update), the new installation record stores lineage metadata: `copiedFrom` (source ID), `copiedFromName` (source name at time of copy), `copiedAt` (timestamp), and `copyReason` (`'copy'`, `'copy-update'`, or `'release-update'`). This metadata is displayed in the detail view's install info section.
 
 ---
 
@@ -624,11 +626,18 @@ Added to `src/main/lib/snapshots.ts`:
 Updated in `src/main/sources/standalone.ts`:
 - `snapshot-restore` handler now runs two phases (nodes first, then pip) with combined summary
 
-### Phase 4: Hard Snapshot Lineage (Not Started)
+### Phase 4: Hard Snapshot Lineage ✅
 
-- Add `copiedFrom` / `copiedAt` / `copyReason` metadata to `performCopy`
-- Build a timeline view showing installation lineage (which install was copied from which)
-- Consider a dedicated "Create Backup" action that wraps Copy Installation with `copyReason: 'backup'`
+Modified in `src/main/lib/ipc.ts`:
+- `performCopy` now accepts `copyReason` parameter and stamps lineage metadata (`copiedFrom`, `copiedFromName`, `copiedAt`, `copyReason`) on the new installation record
+- Old lineage fields are explicitly stripped from inherited properties to prevent propagation through copy chains
+- `copy` action uses `copyReason: 'copy'`, `copy-update` uses `'copy-update'`, `release-update` stamps `'release-update'`
+
+Modified in `src/main/sources/standalone.ts`:
+- Detail view shows a "Copied From" field in install info when `copiedFrom` is set, with reason-specific labels (Copied from / Copy & Update from / Release Update from) and the date
+
+Modified in `locales/en.json`:
+- Added i18n keys for lineage display (`lineage`, `lineageCopy`, `lineageCopyUpdate`, `lineageReleaseUpdate`)
 
 ---
 
