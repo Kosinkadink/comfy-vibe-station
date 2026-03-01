@@ -2,7 +2,7 @@
 
 Consolidated spec for environment snapshots in ComfyUI-Launcher. Captures pip packages, custom nodes, and ComfyUI version at boot granularity, enabling history tracking and rollback.
 
-**Status:** Phases 1–4 implemented.
+**Status:** Phases 1–4 implemented. Snapshot Diff View implemented.
 
 ---
 
@@ -521,22 +521,24 @@ After both phases complete, the handler builds a combined summary and:
 
 The snapshot history appears on the **`'status'` tab** of the detail modal. It shows the 20 most recent snapshots with the newest marked as "★ Current".
 
-Each snapshot (except the current one) has two actions:
+Every snapshot (including the current one) has a **View Diff** action. Non-current snapshots also have:
 - **Restore** — restores the installation to that snapshot's state (with confirmation dialog)
 - **Delete** — removes the snapshot file
 
 A **Save Snapshot** button allows manual snapshot creation with an optional label.
 
-### Snapshot View (Future)
+### Snapshot Diff View ✅
 
-When the user clicks "View" on a snapshot, show a diff against the current state:
+When the user clicks "View Diff" on a snapshot, a modal shows the diff between the current live environment and that snapshot:
 
-- ComfyUI version: `v0.3.10 (abc1234) → v0.3.12 (def5678)`
-- Nodes added/removed/changed
-- Pip packages added/removed/changed
-- Total package count comparison
+- **ComfyUI version**: `v0.3.10 + 5 commits (abc1234) → v0.3.12 (def5678)` — uses `displayVersion` when available (rich format from `installation.version`), falls back to `ref (commit)` for older snapshots
+- **Custom nodes**: added (`+`), removed (`−`), changed (`~`) with version/commit and enabled state; shows both version and state changes when both differ
+- **Pip packages**: added (`+`), removed (`−`), changed (`~`) with total count
+- Shows "No differences" message when the environment matches the snapshot
 
-This is a read-only informational view. Not yet implemented. The data infrastructure (`diffSnapshots`) is ready.
+Implementation: `diffAgainstCurrent()` in `snapshots.ts` captures the live state and diffs against the target. The `snapshot-view` action handler in `standalone.ts` formats the diff as readable text returned via `ActionResult.message`, displayed in the existing `modal.alert` dialog (which renders newlines via `white-space: pre-line`).
+
+The `displayVersion` field is optional on `Snapshot.comfyui` and captured at save time from `installation.version`. Fully backward-compatible — older snapshots without it fall back to the `ref (commit)` format.
 
 ---
 
@@ -638,6 +640,19 @@ Modified in `src/main/sources/standalone.ts`:
 
 Modified in `locales/en.json`:
 - Added i18n keys for lineage display (`lineage`, `lineageCopy`, `lineageCopyUpdate`, `lineageReleaseUpdate`)
+
+### Snapshot Diff View ✅
+
+Added to `src/main/lib/snapshots.ts`:
+- `diffAgainstCurrent` — captures live environment state and diffs against a target snapshot
+- `displayVersion` optional field on `Snapshot.comfyui` — stores rich version string from `installation.version`
+
+Modified in `src/main/sources/standalone.ts`:
+- `snapshot-view` action handler — formats diff as readable text (ComfyUI version, nodes +/−/~, pip packages +/−/~ with counts), returned via `ActionResult.message` for modal display
+- "View Diff" button added to every snapshot item (including current) in the history section
+
+Modified in `locales/en.json`:
+- Added i18n keys: `snapshotView`, `snapshotDiffComfyUI`, `snapshotDiffNodes`, `snapshotDiffPackages`, `snapshotDiffNoChanges`
 
 ---
 
