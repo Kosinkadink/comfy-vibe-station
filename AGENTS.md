@@ -20,6 +20,26 @@ The following subdirectories are separate git repos (cloned from [Comfy-Org](htt
 - `comfy-aimdo/` — AI Model Dynamic Offloader
 - `comfyui-benchmark/` — Benchmarking extension
 
+## Cloning All Repos
+
+If any nested repos are missing, clone them from the workspace root. For each pair below, if the directory does not already contain a `.git` folder, run `git clone`:
+
+| Directory | Clone URL |
+|-----------|-----------|
+| `ComfyUI` | `https://github.com/Comfy-Org/ComfyUI.git` |
+| `ComfyUI_frontend` | `https://github.com/Comfy-Org/ComfyUI_frontend.git` |
+| `ComfyUI-Manager` | `https://github.com/Comfy-Org/ComfyUI-Manager.git` |
+| `desktop` | `https://github.com/Comfy-Org/desktop.git` |
+| `ComfyUI-Launcher` | `https://github.com/Comfy-Org/ComfyUI-Launcher.git` |
+| `ComfyUI-Launcher-Environments` | `https://github.com/Comfy-Org/ComfyUI-Launcher-Environments.git` |
+| `workflow_templates` | `https://github.com/Comfy-Org/workflow_templates.git` |
+| `docs` | `https://github.com/Comfy-Org/docs.git` |
+| `embedded-docs` | `https://github.com/Comfy-Org/embedded-docs.git` |
+| `pyisolate` | `https://github.com/Comfy-Org/pyisolate.git` |
+| `comfy-kitchen` | `https://github.com/Comfy-Org/comfy-kitchen.git` |
+| `comfy-aimdo` | `https://github.com/Comfy-Org/comfy-aimdo.git` |
+| `comfyui-benchmark` | `https://github.com/Comfy-Org/comfyui-benchmark.git` |
+
 ## Important Notes
 
 - **This workspace contains 13 nested git repos plus the wrapper repo itself (14 total).** When asked to pull, fetch, or perform any bulk git operation across "all repos", you MUST iterate over every nested repo listed above AND the workspace root.
