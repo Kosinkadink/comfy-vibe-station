@@ -10,8 +10,8 @@ The following subdirectories are separate git repos (cloned from [Comfy-Org](htt
 - `ComfyUI_frontend/` — Frontend web UI (Vue/TypeScript)
 - `ComfyUI-Manager/` — Extension manager
 - `desktop/` — Electron desktop app
-- `ComfyUI-Launcher/` — Launcher for managing installations
-- `ComfyUI-Launcher-Environments/` — Environment definitions for the launcher
+- `ComfyUI-Launcher/` — ComfyUI Desktop 2.0 (Electron app for managing installations)
+- `ComfyUI-Launcher-Environments/` — Standalone environment definitions for ComfyUI Desktop 2.0
 - `workflow_templates/` — Official workflow templates
 - `docs/` — Documentation site source
 - `embedded-docs/` — Built-in help pages for core nodes
@@ -30,8 +30,8 @@ If any nested repos are missing, clone them from the workspace root. For each pa
 | `ComfyUI_frontend` | `https://github.com/Comfy-Org/ComfyUI_frontend.git` |
 | `ComfyUI-Manager` | `https://github.com/Comfy-Org/ComfyUI-Manager.git` |
 | `desktop` | `https://github.com/Comfy-Org/desktop.git` |
-| `ComfyUI-Launcher` | `https://github.com/Comfy-Org/ComfyUI-Launcher.git` |
-| `ComfyUI-Launcher-Environments` | `https://github.com/Comfy-Org/ComfyUI-Launcher-Environments.git` |
+| `ComfyUI-Launcher` | `https://github.com/Comfy-Org/ComfyUI-Desktop-2.0-Beta.git` |
+| `ComfyUI-Launcher-Environments` | `https://github.com/Comfy-Org/ComfyUI-Standalone-Environments.git` |
 | `workflow_templates` | `https://github.com/Comfy-Org/workflow_templates.git` |
 | `docs` | `https://github.com/Comfy-Org/docs.git` |
 | `embedded-docs` | `https://github.com/Comfy-Org/embedded-docs.git` |
